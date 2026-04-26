@@ -10,8 +10,11 @@
     "mineflayer": "^4.20.1",
     "mineflayer-pvp": "^1.3.2",
     "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-viewer": "^1.30.0",
     "minecraft-data": "^3.78.0",
-    "vec3": "^0.1.10"
+    "vec3": "^0.1.10",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
   },
   "engines": {
     "node": ">=18"
