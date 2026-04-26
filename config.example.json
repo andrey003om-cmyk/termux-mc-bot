@@ -1,0 +1,29 @@
+{
+  "server": "Bon4ikMines.aternos.me:24474",
+  "username": "I_m___BotByXX",
+  "auth": "offline",
+  "version": "1.16.5",
+  "owner": "",
+  "ownerOnlyMode": false,
+  "autoReconnect": true,
+  "reconnectDelayMs": 8000,
+  "pvp": {
+    "enabled": true,
+    "reach": 3.5,
+    "attackRangeBlocks": 16
+  },
+  "moderation": {
+    "enabled": true,
+    "warnCooldownSec": 30,
+    "youtuberPlayers": []
+  },
+  "authPlugin": {
+    "enabled": true,
+    "password": "123BotLogins123",
+    "loginCommand": "/login {password}",
+    "registerCommand": "/reg {password}",
+    "loginDelayMs": 1500,
+    "registerDelayMs": 4000,
+    "retryDelayMs": 6000
+  }
+}
