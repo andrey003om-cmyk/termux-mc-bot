@@ -65,6 +65,16 @@ const config = {
     },
     fileConfig.authPlugin || {},
   ),
+  web: Object.assign(
+    {
+      enabled: true,
+      port: 3008,
+      viewerPort: 3007,
+      firstPerson: true,
+      host: '127.0.0.1',
+    },
+    fileConfig.web || {},
+  ),
 };
 
 function parseServer(s) {
@@ -102,13 +112,17 @@ const rl = readline.createInterface({
   prompt: '> ',
   terminal: true,
 });
-function logUI(line) {
+let webBroadcast = null; // подменяется при старте веб-панели
+function logUI(line, kind = 'sys', extra) {
   process.stdout.write('\r\x1b[K' + line + '\n');
   rl.prompt(true);
+  if (webBroadcast) {
+    try { webBroadcast({ type: 'log', kind, line, ts: Date.now(), ...(extra || {}) }); } catch (_) {}
+  }
 }
-function logChat(prefix, line) { logUI(`[${prefix}] ${line}`); }
-function logSys(line)         { logUI(`* ${line}`); }
-function logErr(line)         { logUI(`! ${line}`); }
+function logChat(prefix, line) { logUI(`[${prefix}] ${line}`, 'chat', { who: prefix, msg: line }); }
+function logSys(line)         { logUI(`* ${line}`, 'sys'); }
+function logErr(line)         { logUI(`! ${line}`, 'err'); }
 
 // ---------- helpers ----------
 function isYoutuber(name) {
@@ -368,6 +382,19 @@ function createBot() {
       logSys('Авто-авторизация включена. Пробую войти/зарегистрироваться...');
       scheduleAuth();
     }
+    // 3D вид «глазами бота» через prismarine-viewer
+    if (config.web.enabled) {
+      try {
+        const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
+        mineflayerViewer(bot, {
+          port: config.web.viewerPort,
+          firstPerson: !!config.web.firstPerson,
+        });
+        logSys(`3D-вид: http://${config.web.host}:${config.web.viewerPort}`);
+      } catch (e) {
+        logErr('prismarine-viewer не запустился: ' + e.message);
+      }
+    }
   });
 
   // ----- Универсальный обработчик чата -----
@@ -551,11 +578,9 @@ function reconnect() {
   }
 }
 
-rl.on('line', (raw) => {
-  const line = raw.trim();
-  if (!line) { rl.prompt(); return; }
-  const lower = line.toLowerCase();
-
+function runCommand(raw, source = 'cli') {
+  const line = String(raw || '').trim();
+  if (!line) return;
   let m;
   if ((m = line.match(/^Слушать только\s+(\S+)\s*$/i))) {
     state.owner = m[1].toLowerCase();
@@ -571,7 +596,7 @@ rl.on('line', (raw) => {
   } else if ((m = line.match(/^(иди|follow)\s+(\S+)\s*$/i))) {
     followPlayer(m[2]);
   } else if (/^(стой|stop)\s*$/i.test(line)) {
-    stopFollow(); stopPvP(); logSys('Остановился.');
+    stopFollow(); stopPvP(); stopAllControls(); logSys('Остановился.');
   } else if (/^ютуберы\s*$/i.test(line)) {
     logSys('Ютуберы: ' + (state.youtubers.size ? [...state.youtubers].join(', ') : '(нет)'));
   } else if ((m = line.match(/^ютубер\+\s+(\S+)\s*$/i))) {
@@ -610,9 +635,38 @@ rl.on('line', (raw) => {
     return;
   } else if (/^(помощь|help|\?)\s*$/i.test(line)) {
     printHelp();
+  } else if (line.startsWith('/')) {
+    // Прямая отправка команды на сервер из любого источника
+    safeChat(line);
   } else {
     logSys('Неизвестная команда. Напиши "помощь".');
   }
+}
+
+// ---------- WASD управление ботом из веб-панели ----------
+const CONTROL_KEYS = ['forward', 'back', 'left', 'right', 'jump', 'sneak', 'sprint'];
+function setControl(key, on) {
+  if (!CONTROL_KEYS.includes(key)) return false;
+  if (!state.bot || !state.alive) return false;
+  try { state.bot.setControlState(key, !!on); return true; }
+  catch (e) { logErr('control: ' + e.message); return false; }
+}
+function stopAllControls() {
+  if (!state.bot) return;
+  for (const k of CONTROL_KEYS) {
+    try { state.bot.setControlState(k, false); } catch (_) {}
+  }
+}
+function lookAtPlayer(name) {
+  if (!state.bot || !state.alive) return false;
+  const p = state.bot.players[name];
+  if (!p || !p.entity) return false;
+  try { state.bot.lookAt(p.entity.position.offset(0, 1.6, 0), true); return true; }
+  catch (e) { logErr('look: ' + e.message); return false; }
+}
+
+rl.on('line', (raw) => {
+  runCommand(raw, 'cli');
   rl.prompt();
 });
 
@@ -635,4 +689,38 @@ if (state.ownerOnlyMode && state.owner) {
 console.log('Напиши "помощь" для списка команд.');
 printHelp();
 rl.prompt();
+
+// Стартуем веб-панель управления (если включена)
+if (config.web.enabled) {
+  try {
+    const startWeb = require('./web');
+    const handle = startWeb({
+      host: config.web.host,
+      port: config.web.port,
+      viewerPort: config.web.viewerPort,
+      runCommand: (text) => runCommand(text, 'web'),
+      setControl,
+      stopAllControls,
+      lookAtPlayer,
+      getState: () => ({
+        server: `${host}:${port}`,
+        username: config.username,
+        alive: state.alive,
+        authed: state.authed,
+        ownerOnlyMode: state.ownerOnlyMode,
+        owner: state.owner,
+        youtubers: [...state.youtubers],
+        viewerUrl: `http://${config.web.host}:${config.web.viewerPort}`,
+        players: state.bot && state.alive ? Object.keys(state.bot.players).filter(p => p !== state.bot.username) : [],
+        health: state.bot?.health ?? null,
+        food: state.bot?.food ?? null,
+      }),
+    });
+    webBroadcast = handle.broadcast;
+    logSys(`Веб-панель: http://${config.web.host}:${config.web.port}`);
+  } catch (e) {
+    logErr('Веб-панель не запустилась: ' + e.message);
+  }
+}
+
 createBot();
