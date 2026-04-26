@@ -43,7 +43,7 @@ const config = {
   server: cliArgs.server || fileConfig.server || 'localhost:25565',
   username: cliArgs.username || fileConfig.username || 'I_m___BotByXX',
   auth: cliArgs.auth || fileConfig.auth || 'offline',
-  version: cliArgs.version || fileConfig.version || '1.16.5',
+  version: cliArgs.version || fileConfig.version || false,  // false = автоопределение версии сервера
   owner: cliArgs.owner || fileConfig.owner || '',
   ownerOnlyMode: !!(fileConfig.ownerOnlyMode || cliArgs.ownerOnly === 'true'),
   autoReconnect: fileConfig.autoReconnect !== false,
@@ -58,7 +58,7 @@ const config = {
       enabled: true,
       password: '123BotLogins123',
       loginCommand: '/login {password}',
-      registerCommand: '/reg {password}',
+      registerCommand: '/reg {password} {password}',
       loginDelayMs: 1500,
       registerDelayMs: 4000,
       retryDelayMs: 6000,
@@ -151,6 +151,24 @@ function safeChat(text) {
     try { state.bot.chat(c); } catch (e) { logErr('chat fail: ' + e.message); }
   }
 }
+// На серверах 1.19+ обычный чат может быть отключён ("Chat disabled due to missing profile public key").
+// Команды (включая /tell) идут через отдельный пакет и работают без подписи.
+// Поэтому ответы игрокам шлём через /tell — приходят им лично и не требуют подписи.
+function whisper(target, text) {
+  if (!state.bot || !state.alive || !target) return;
+  const safeName = String(target).replace(/[^A-Za-z0-9_\-]/g, '');
+  if (!safeName) return;
+  const msg = String(text).replace(/[\r\n]/g, ' ');
+  const chunks = msg.match(/.{1,180}/g) || [];
+  for (const c of chunks) {
+    try { state.bot.chat(`/tell ${safeName} ${c}`); }
+    catch (e) { logErr('tell fail: ' + e.message); }
+  }
+}
+function onlinePlayersList() {
+  if (!state.bot) return [];
+  return Object.keys(state.bot.players || {}).filter(n => n && n !== state.bot.username);
+}
 
 // ---------- auth plugin (AuthMe / nLogin) ----------
 function fillAuthCmd(tpl) {
@@ -231,13 +249,13 @@ function reactToPlayerMessage(name, message) {
 
   // flood
   if (isFlood(history) && canWarn(name)) {
-    safeChat(`${name}, не флуди. ${ruleText(3)}`);
+    whisper(name, `Не флуди. ${ruleText(3)}`);
     return;
   }
 
   // meaningless
   if (isMeaningless(message) && canWarn(name)) {
-    safeChat(`${name}, бессмысленные сообщения запрещены. ${ruleText(7)}`);
+    whisper(name, `Бессмысленные сообщения запрещены. ${ruleText(7)}`);
     return;
   }
 
@@ -248,7 +266,7 @@ function reactToPlayerMessage(name, message) {
   if (verdict.rule === 4 && isYoutuber(name)) return;
 
   if (!canWarn(name)) return;
-  safeChat(`${name}, нарушение. ${ruleText(verdict.rule)}`);
+  whisper(name, `Нарушение. ${ruleText(verdict.rule)}`);
 }
 
 // ---------- owner-command handling ----------
@@ -283,7 +301,12 @@ function handleOwnerChat(name, message) {
     return;
   }
   if (/^(правила|rules)$/i.test(lower)) {
-    safeChat('Правила: ' + rulesList());
+    whisper(name, 'Правила: ' + rulesList());
+    return;
+  }
+  if (/^(онлайн|online|кто тут|кто онлайн)$/i.test(lower)) {
+    const ps = onlinePlayersList();
+    whisper(name, `Онлайн (${ps.length}): ${ps.join(', ') || '(никого)'}`);
     return;
   }
   // Otherwise, repeat as chat from bot
@@ -563,6 +586,7 @@ function printHelp() {
   logSys('  ник <Ник>                 — сменить ник и переподключиться');
   logSys('  логин                     — отправить /login вручную');
   logSys('  регистрация               — отправить /reg вручную');
+  logSys('  онлайн                    — список игроков на сервере');
   logSys('  пароль <новый>            — сменить пароль авторизации');
   logSys('  правила                   — показать список правил');
   logSys('  стоп бот / выход          — выключить бота');
@@ -622,6 +646,12 @@ function runCommand(raw, source = 'cli') {
   } else if (/^(регистрация|register|рег)\s*$/i.test(line)) {
     if (!state.alive) logErr('Бот не на сервере.');
     else sendRegister();
+  } else if (/^(онлайн|online|кто тут|кто онлайн)\s*$/i.test(line)) {
+    if (!state.alive) logErr('Бот не на сервере.');
+    else {
+      const ps = onlinePlayersList();
+      logSys(`Онлайн (${ps.length}): ${ps.join(', ') || '(никого)'}`);
+    }
   } else if ((m = line.match(/^пароль\s+(\S+)\s*$/i))) {
     config.authPlugin.password = m[1];
     logSys('Пароль авторизации обновлён.');
@@ -663,6 +693,31 @@ function lookAtPlayer(name) {
   if (!p || !p.entity) return false;
   try { state.bot.lookAt(p.entity.position.offset(0, 1.6, 0), true); return true; }
   catch (e) { logErr('look: ' + e.message); return false; }
+}
+// Доворот камеры на дельту (для drag-to-look из веб-панели и для радара).
+function setView(dyaw, dpitch) {
+  if (!state.bot || !state.alive || !state.bot.entity) return false;
+  try {
+    const newYaw = state.bot.entity.yaw + Number(dyaw || 0);
+    let newPitch = state.bot.entity.pitch + Number(dpitch || 0);
+    const lim = Math.PI / 2 - 0.01;
+    if (newPitch > lim) newPitch = lim;
+    if (newPitch < -lim) newPitch = -lim;
+    state.bot.look(newYaw, newPitch, false);
+    return true;
+  } catch (e) { logErr('look: ' + e.message); return false; }
+}
+// Поворот в сторону вектора (dx, dz) в локальных координатах бота.
+function setMoveDirection(dx, dz) {
+  if (!state.bot || !state.alive || !state.bot.entity) return false;
+  if (Math.abs(dx) < 0.01 && Math.abs(dz) < 0.01) return false;
+  try {
+    // Yaw в Minecraft: 0 = -Z, +90° = -X. Нужно: смотреть в направлении (dx, dz)
+    // взгляд: lookX = -sin(yaw), lookZ = -cos(yaw) → yaw = atan2(-dx, -dz)
+    const yaw = Math.atan2(-dx, -dz);
+    state.bot.look(yaw, state.bot.entity.pitch, false);
+    return true;
+  } catch (e) { return false; }
 }
 
 // ---------- мини-карта / радар ----------
@@ -738,6 +793,8 @@ if (config.web.enabled) {
       setControl,
       stopAllControls,
       lookAtPlayer,
+      setView,
+      setMoveDirection,
       getRadar,
       getState: () => ({
         server: `${host}:${port}`,
