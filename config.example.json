@@ -25,5 +25,12 @@
     "loginDelayMs": 1500,
     "registerDelayMs": 4000,
     "retryDelayMs": 6000
+  },
+  "web": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3008,
+    "viewerPort": 3007,
+    "firstPerson": true
   }
 }
