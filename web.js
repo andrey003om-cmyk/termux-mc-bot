@@ -52,10 +52,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .radarLegend .pl { color:#3fb950; }
   .radarLegend .ho { color:#f85149; }
   .radarLegend .pa { color:#8b949e; }
-  .ctrls { display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; padding:8px; }
-  .ctrls button { background:#21262d; color:var(--txt); border:1px solid var(--br); border-radius:8px; padding:14px; font-size:18px; font-weight:600; user-select:none; }
-  .ctrls button:active, .ctrls button.held { background:var(--acc); }
-  .ctrls .blank { visibility:hidden; }
+  .ctrls { display:grid; grid-template-columns: 160px 1fr; gap:8px; padding:8px; align-items:center; }
+  .ctrls .actions { display:grid; grid-template-columns: 1fr 1fr; gap:6px; }
+  .ctrls .actions button { background:#21262d; color:var(--txt); border:1px solid var(--br); border-radius:8px; padding:14px; font-size:14px; font-weight:600; user-select:none; }
+  .ctrls .actions button:active, .ctrls .actions button.held { background:var(--acc); }
+  /* Виртуальный джойстик */
+  .joy { width:150px; height:150px; border-radius:50%; background:#0a0e14; border:2px solid var(--br); position:relative; touch-action:none; user-select:none; }
+  .joy .thumb { position:absolute; left:50%; top:50%; width:54px; height:54px; margin-left:-27px; margin-top:-27px; border-radius:50%; background:var(--acc); border:2px solid #1a4a26; box-shadow:0 4px 10px rgba(0,0,0,0.5); transition:background 0.15s; }
+  .joy.active .thumb { background:#3fb950; }
+  .joy .label { position:absolute; bottom:-18px; left:0; right:0; text-align:center; font-size:11px; color:var(--mut); }
+  /* Drag-to-look оверлей поверх 3D-вида и радара */
+  .lookOverlay { position:absolute; left:0; top:0; right:0; bottom:0; cursor:grab; touch-action:none; background:transparent; }
+  .lookHint { position:absolute; top:6px; right:8px; font-size:10px; color:rgba(255,255,255,0.5); background:rgba(0,0,0,0.4); padding:3px 6px; border-radius:3px; pointer-events:none; }
   .meta { padding:8px 12px; font-size:12px; color:var(--mut); border-top:1px solid var(--br); }
   .meta a { color:#58a6ff; }
   .ownerbar { display:flex; gap:6px; padding:8px; border-top:1px solid var(--br); align-items:center; flex-wrap:wrap; }
@@ -81,6 +89,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="quick">
       <button onclick="cmd('логин')">логин</button>
       <button onclick="cmd('регистрация')">/reg</button>
+      <button onclick="cmd('онлайн')">онлайн</button>
       <button onclick="cmd('стой')">стой</button>
       <button onclick="cmd('правила')">правила</button>
       <button onclick="cmd('помощь')">помощь</button>
@@ -121,21 +130,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </div>
       <div id="pane3d" class="tabPane">
         <iframe id="viewer" src="about:blank" loading="lazy"></iframe>
+        <div id="lookOverlay" class="lookOverlay"></div>
+        <div class="lookHint">пальцем — повернуть бота</div>
       </div>
     </div>
     <div class="ctrls">
-      <button class="blank"></button>
-      <button data-key="forward">▲</button>
-      <button class="blank"></button>
-      <button data-key="left">◀</button>
-      <button data-key="back">▼</button>
-      <button data-key="right">▶</button>
-      <button data-key="sneak">⇩ красться</button>
-      <button data-key="jump">⇧ прыжок</button>
-      <button data-key="sprint">▶▶ бег</button>
+      <div>
+        <div id="joy" class="joy"><div class="thumb"></div><div class="label">движение</div></div>
+      </div>
+      <div class="actions">
+        <button data-key="jump">⇧ прыжок</button>
+        <button data-key="sprint">▶▶ бег</button>
+        <button data-key="sneak">⇩ красться</button>
+        <button onclick="stopAll()">■ стоп</button>
+      </div>
     </div>
     <div class="meta">
-      Зажми WASD-кнопку — бот идёт. Радар обновляется в реальном времени.<br>
+      <b>Джойстик</b> — двигай пальцем куда идти. <b>На 3D</b> — проводи пальцем чтобы повернуть бота.<br>
       3D в новой вкладке: <a id="vlink" href="#" target="_blank">открыть напрямую</a>
     </div>
   </section>
@@ -219,6 +230,133 @@ function bindHold(btn) {
   btn.addEventListener('mouseleave', end);
 }
 document.querySelectorAll('.ctrls button[data-key]').forEach(bindHold);
+
+function stopAll() {
+  fetch('/api/stop-all', { method:'POST' });
+  document.querySelectorAll('.ctrls .actions button.held').forEach(b => b.classList.remove('held'));
+}
+
+// ---------- Виртуальный джойстик ----------
+(function setupJoystick() {
+  const joy = document.getElementById('joy');
+  const thumb = joy.querySelector('.thumb');
+  const R = 60; // макс. радиус смещения
+  let pid = null;
+  let lastSendT = 0;
+  let lastVec = {x:0, z:0, sprint:false};
+
+  function sendJoy(x, z, sprint) {
+    lastVec = { x, z, sprint };
+    fetch('/api/joystick', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({x, z, sprint})});
+  }
+  function setThumb(dx, dz) {
+    thumb.style.transform = 'translate(' + dx + 'px,' + dz + 'px)';
+  }
+  function reset() {
+    pid = null;
+    joy.classList.remove('active');
+    setThumb(0, 0);
+    sendJoy(0, 0, false);
+  }
+  function move(clientX, clientY) {
+    const r = joy.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    let dx = clientX - cx;
+    let dz = clientY - cy;
+    const m = Math.sqrt(dx*dx + dz*dz);
+    if (m > R) { dx = dx * R / m; dz = dz * R / m; }
+    setThumb(dx, dz);
+    const nx = dx / R;        // -1..1 — вправо
+    const nz = dz / R;        // -1..1 — назад на экране = вперёд по координатам Z+ ? Нужно правильно.
+    // На 2D-радаре +Z — вниз (в Minecraft +Z = юг). На джойстике вверх = идти вперёд (туда куда смотрит бот).
+    // Но "вперёд бота" = вектор взгляда, а мы трактуем джойстик как абсолютные мировые направления:
+    // верх джойстика = -Z (север), низ = +Z (юг), вправо = +X (восток), влево = -X (запад).
+    // Бот будет поворачиваться в направлении (x, z) и идти.
+    // throttle до ~10 Гц, плюс мгновенный send при отпускании
+    const now = Date.now();
+    if (now - lastSendT > 100) {
+      lastSendT = now;
+      sendJoy(nx, nz, false);
+    } else {
+      lastVec = { x: nx, z: nz, sprint:false };
+    }
+  }
+  joy.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    pid = e.pointerId;
+    joy.setPointerCapture(pid);
+    joy.classList.add('active');
+    move(e.clientX, e.clientY);
+  });
+  joy.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== pid) return;
+    e.preventDefault();
+    move(e.clientX, e.clientY);
+  });
+  const release = (e) => {
+    if (pid != null && e.pointerId !== pid) return;
+    if (pid != null) try { joy.releasePointerCapture(pid); } catch (_) {}
+    reset();
+  };
+  joy.addEventListener('pointerup', release);
+  joy.addEventListener('pointercancel', release);
+  joy.addEventListener('pointerleave', (e) => { if (pid != null) release(e); });
+
+  // Двойной тап — toggle "бег" пока двигаешь
+  let lastTap = 0;
+  joy.addEventListener('pointerdown', () => {
+    const now = Date.now();
+    if (now - lastTap < 350) {
+      lastVec.sprint = !lastVec.sprint;
+      sendJoy(lastVec.x, lastVec.z, lastVec.sprint);
+    }
+    lastTap = now;
+  });
+
+  // Периодически добиваем джойстик-команду чтобы движение не "залипало" если потеряли пакет
+  setInterval(() => { if (pid != null) sendJoy(lastVec.x, lastVec.z, lastVec.sprint); }, 400);
+})();
+
+// ---------- Drag-to-look поверх 3D-окна ----------
+(function setupLook() {
+  const ov = document.getElementById('lookOverlay');
+  let pid = null, lx = 0, ly = 0;
+  const SENS = 0.006; // радиан на пиксель
+  let pendingYaw = 0, pendingPitch = 0;
+  let flushTimer = null;
+  function flush() {
+    if (Math.abs(pendingYaw) < 0.001 && Math.abs(pendingPitch) < 0.001) return;
+    const dyaw = pendingYaw, dpitch = pendingPitch;
+    pendingYaw = 0; pendingPitch = 0;
+    fetch('/api/look-delta', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dyaw, dpitch})});
+  }
+  ov.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    pid = e.pointerId;
+    ov.setPointerCapture(pid);
+    lx = e.clientX; ly = e.clientY;
+  });
+  ov.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== pid) return;
+    e.preventDefault();
+    const dx = e.clientX - lx;
+    const dy = e.clientY - ly;
+    lx = e.clientX; ly = e.clientY;
+    pendingYaw += dx * SENS;
+    pendingPitch += dy * SENS;
+    if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 60);
+  });
+  const end = (e) => {
+    if (pid != null && e.pointerId !== pid) return;
+    if (pid != null) try { ov.releasePointerCapture(pid); } catch (_) {}
+    pid = null;
+    flush();
+  };
+  ov.addEventListener('pointerup', end);
+  ov.addEventListener('pointercancel', end);
+  ov.addEventListener('pointerleave', end);
+})();
 
 function applyState(s) {
   if (!s) return;
@@ -342,6 +480,8 @@ function startWeb(opts) {
     setControl,
     stopAllControls,
     lookAtPlayer,
+    setView,
+    setMoveDirection,
     getRadar,
     getState,
   } = opts;
@@ -386,6 +526,32 @@ function startWeb(opts) {
 
   app.get('/api/radar', (_req, res) => {
     res.json(getRadar ? getRadar() : { alive: false });
+  });
+
+  // Доворот камеры (drag-to-look на 3D-окне).
+  app.post('/api/look-delta', (req, res) => {
+    const dyaw = Number(req.body?.dyaw || 0);
+    const dpitch = Number(req.body?.dpitch || 0);
+    const ok = setView ? setView(dyaw, dpitch) : false;
+    res.json({ ok });
+  });
+
+  // Джойстик: вектор (x,z) в локальных координатах + признак бега. Сервер сам поворачивает бота и идёт вперёд.
+  app.post('/api/joystick', (req, res) => {
+    const x = Number(req.body?.x || 0);
+    const z = Number(req.body?.z || 0);
+    const sprint = !!req.body?.sprint;
+    const mag = Math.sqrt(x * x + z * z);
+    if (mag < 0.18) {
+      // отпустили — стоп
+      setControl('forward', false);
+      setControl('sprint', false);
+      return res.json({ ok: true, moving: false });
+    }
+    if (setMoveDirection) setMoveDirection(x, z);
+    setControl('forward', true);
+    setControl('sprint', sprint && mag > 0.7);
+    res.json({ ok: true, moving: true });
   });
 
   const server = http.createServer(app);
