@@ -2,7 +2,7 @@
   "server": "Bon4ikMines.aternos.me:24474",
   "username": "I_m___BotByXX",
   "auth": "offline",
-  "version": "1.16.5",
+  "version": false,
   "owner": "",
   "ownerOnlyMode": false,
   "autoReconnect": true,
@@ -21,7 +21,7 @@
     "enabled": true,
     "password": "123BotLogins123",
     "loginCommand": "/login {password}",
-    "registerCommand": "/reg {password}",
+    "registerCommand": "/reg {password} {password}",
     "loginDelayMs": 1500,
     "registerDelayMs": 4000,
     "retryDelayMs": 6000
