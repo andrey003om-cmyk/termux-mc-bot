@@ -665,6 +665,42 @@ function lookAtPlayer(name) {
   catch (e) { logErr('look: ' + e.message); return false; }
 }
 
+// ---------- мини-карта / радар ----------
+function getRadar(range = 48) {
+  if (!state.bot || !state.alive || !state.bot.entity) {
+    return { alive: false };
+  }
+  const me = state.bot.entity;
+  const out = {
+    alive: true,
+    pos: { x: me.position.x, y: me.position.y, z: me.position.z },
+    yaw: me.yaw,
+    pitch: me.pitch,
+    health: state.bot.health ?? null,
+    food: state.bot.food ?? null,
+    range,
+    players: [],
+    hostiles: [],
+    passive: [],
+  };
+  for (const e of Object.values(state.bot.entities)) {
+    if (!e || e === me || !e.position) continue;
+    const dx = e.position.x - me.position.x;
+    const dz = e.position.z - me.position.z;
+    const dy = e.position.y - me.position.y;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d > range) continue;
+    const item = {
+      name: e.username || e.name || (e.displayName || e.kind || 'entity'),
+      dx, dz, dy, d: Math.round(d * 10) / 10,
+    };
+    if (e.type === 'player') out.players.push(item);
+    else if (e.type === 'hostile' || e.kind === 'Hostile mobs') out.hostiles.push(item);
+    else if (e.type === 'mob' || e.kind === 'Passive mobs') out.passive.push(item);
+  }
+  return out;
+}
+
 rl.on('line', (raw) => {
   runCommand(raw, 'cli');
   rl.prompt();
@@ -702,6 +738,7 @@ if (config.web.enabled) {
       setControl,
       stopAllControls,
       lookAtPlayer,
+      getRadar,
       getState: () => ({
         server: `${host}:${port}`,
         username: config.username,
